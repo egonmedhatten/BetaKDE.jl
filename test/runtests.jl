@@ -74,18 +74,67 @@ using Distributions
         @test !any(isnan.(result.density))
     end
 
-    @testset "bw_beta_rot direct call" begin
+    @testset "bw_HS direct call" begin
         data = rand(Beta(3, 5), 1000)
-        h, is_fallback = BetaKDE.bw_beta_rot(data)
+        h, is_fallback = bw_HS(data)
         @test 0.0 < h < 1.0
         @test is_fallback == false
     end
 
-    @testset "bw_beta_rot fallback triggers" begin
+    @testset "bw_HS fallback triggers" begin
         data = rand(Beta(0.1, 0.1), 500)
-        h, is_fallback = BetaKDE.bw_beta_rot(data)
+        h, is_fallback = bw_HS(data)
         @test 0.0 < h < 1.0
         @test is_fallback == true
+    end
+
+    @testset "Bandwidth matches Python reference" begin
+        # Deterministic data — verified against Python beta_kde package
+        data = [0.12, 0.25, 0.33, 0.41, 0.48, 0.55, 0.62, 0.71, 0.79, 0.88]
+        h, is_fallback = bw_HS(data)
+        @test is_fallback == false
+        @test isapprox(h, 1.915314763032799e-01; rtol=1e-10)
+    end
+
+    @testset "Density values match Python reference" begin
+        # Same data, fixed bandwidth, unnormalized — compare to scipy.stats.beta.pdf
+        data = [0.12, 0.25, 0.33, 0.41, 0.48, 0.55, 0.62, 0.71, 0.79, 0.88]
+        result = betakde(data; bw=0.1, npoints=5, normalize=false)
+        expected = [4.311497075363923e-01, 9.928262670948985e-01,
+                    1.295786396751072e+00, 1.130204273306703e+00,
+                    5.020511503966179e-01]
+        @test all(isapprox.(result.density, expected; rtol=1e-8))
+    end
+
+    @testset "Constant data does not error" begin
+        data = fill(0.5, 100)
+        result = betakde(data)
+        @test result isa BetaKDEUnivariate
+        @test all(isfinite.(result.density))
+        @test result.bandwidth > 0.0
+    end
+
+    @testset "Single data point" begin
+        data = [0.5]
+        result = betakde(data)
+        @test result isa BetaKDEUnivariate
+        @test all(isfinite.(result.density))
+    end
+
+    @testset "Minimum viable sample (n=2)" begin
+        data = [0.3, 0.7]
+        result = betakde(data)
+        @test result isa BetaKDEUnivariate
+        @test all(isfinite.(result.density))
+        @test result.bandwidth > 0.0
+    end
+
+    @testset "Peak near mode of distribution" begin
+        # Beta(2,5) has mode at (2-1)/(2+5-2) = 0.2
+        data = rand(Beta(2, 5), 5000)
+        result = betakde(data)
+        peak_idx = argmax(result.density)
+        @test 0.1 < result.x[peak_idx] < 0.35
     end
 
 end
