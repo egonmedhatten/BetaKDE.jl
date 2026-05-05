@@ -1,11 +1,11 @@
 module BetaKDE
 
 using Distributions
-using SpecialFunctions: loggamma
+using SpecialFunctions: loggamma, logbeta
 using Statistics: mean, var
 using RecipesBase
 
-export betakde, BetaKDEUnivariate
+export betakde, BetaKDEUnivariate, bw_HS
 
 """
     BetaKDEUnivariate
@@ -47,16 +47,18 @@ function _rho(x::Real, h::Real)
 end
 
 # --------------------------------------------------------------------------
-# O(1) Rule-of-Thumb Bandwidth Selector
+# O(1) Rule-of-Thumb Bandwidth Selector (Hallberg Szabadváry, 2026)
 # --------------------------------------------------------------------------
 
 """
-    bw_beta_rot(data::AbstractVector{<:Real}) -> (h::Float64, is_fallback::Bool)
+    bw_HS(data::AbstractVector{<:Real}) -> (h::Float64, is_fallback::Bool)
 
-Closed-form O(1) rule-of-thumb bandwidth selector for Beta KDE.
+Closed-form O(1) MISE-optimal bandwidth selector for Beta KDE
+(Hallberg Szabadváry, 2026). Named `HS` to match the R `kdensity` package convention.
+
 Returns the bandwidth `h` and a flag indicating whether the fallback heuristic was used.
 """
-function bw_beta_rot(data::AbstractVector{<:Real})
+function bw_HS(data::AbstractVector{<:Real})
     data_filtered = filter(xi -> 0.0 < xi < 1.0, data)
     n = length(data_filtered)
     n < 2 && return (1e-5, true)
@@ -120,31 +122,35 @@ function _fallback_bandwidth(a::Real, b::Real, n::Int)
     return (h, true)
 end
 
+# Backward-compatible alias
+const bw_beta_rot = bw_HS
+
 # --------------------------------------------------------------------------
 # Main Estimator
 # --------------------------------------------------------------------------
 
 """
-    betakde(data; bw=nothing, npoints=512, normalize=true) -> BetaKDEUnivariate
+    betakde(data; bw=:HS, npoints=512, normalize=true) -> BetaKDEUnivariate
 
 Compute a Beta kernel density estimate of `data` on [0, 1].
 
 # Arguments
 - `data`: vector of observations (values outside (0,1) are clamped).
-- `bw`: bandwidth (Float64). If `nothing`, selected automatically via `bw_beta_rot`.
+- `bw`: bandwidth. Either a numeric value, or `:HS` (default) for automatic
+  selection via the Hallberg Szabadváry (2026) rule-of-thumb.
 - `npoints`: number of equally-spaced evaluation grid points (default 512).
 - `normalize`: if `true` (default), rescale the density so it integrates to 1.
 
 # Returns
 A `BetaKDEUnivariate` with fields `x`, `density`, and `bandwidth`.
 """
-function betakde(data::AbstractVector{<:Real}; bw=nothing, npoints::Int=512, normalize::Bool=true)
+function betakde(data::AbstractVector{<:Real}; bw::Union{Symbol,Real}=:HS, npoints::Int=512, normalize::Bool=true)
     ε = 1e-10
     data_c = clamp.(Float64.(data), ε, 1.0 - ε)
 
     # Bandwidth selection
-    h::Float64 = if bw === nothing
-        bw_beta_rot(data_c)[1]
+    h::Float64 = if bw === :HS
+        bw_HS(data_c)[1]
     else
         Float64(bw)
     end
@@ -153,6 +159,10 @@ function betakde(data::AbstractVector{<:Real}; bw=nothing, npoints::Int=512, nor
     x_grid = range(0.0, 1.0; length=npoints)
     density = Vector{Float64}(undef, npoints)
     n = length(data_c)
+
+    # Pre-compute log(x) and log(1-x) for all data points (reused at every grid point)
+    log_data = log.(data_c)
+    log_1mdata = log.(1.0 .- data_c)
 
     # Kernel evaluation
     @inbounds for i in eachindex(x_grid)
@@ -173,11 +183,14 @@ function betakde(data::AbstractVector{<:Real}; bw=nothing, npoints::Int=512, nor
         α = max(α, 1e-10)
         β_p = max(β_p, 1e-10)
 
-        # Evaluate kernel at all data points and average
-        kern = Beta(α, β_p)
+        # Evaluate kernel at all data points and average.
+        # Compute logbeta once per grid point (constant across data points).
+        lb = logbeta(α, β_p)
+        am1 = α - 1.0
+        bm1 = β_p - 1.0
         s = 0.0
-        for j in eachindex(data_c)
-            s += pdf(kern, data_c[j])
+        @simd for j in eachindex(data_c)
+            s += exp(am1 * log_data[j] + bm1 * log_1mdata[j] - lb)
         end
         density[i] = s / n
     end
