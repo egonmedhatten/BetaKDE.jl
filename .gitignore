@@ -1,0 +1,16 @@
+# Julia package convention: don't commit Manifest.toml for packages
+Manifest.toml
+
+# Coverage files
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+
+# Documentation build output
+/docs/build/
+/docs/site/
+
+# OS
+.DS_Store
+
+validation/
