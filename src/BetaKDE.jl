@@ -17,6 +17,8 @@ Fields mirror `KernelDensity.jl`'s `UnivariateKDE`:
 - `bandwidth`: bandwidth used
 - `lower`: lower bound of the support
 - `upper`: upper bound of the support
+
+The result is callable: `result(x)` evaluates the exact kernel density at `x`.
 """
 struct BetaKDEUnivariate
     x::Vector{Float64}
@@ -24,6 +26,10 @@ struct BetaKDEUnivariate
     bandwidth::Float64
     lower::Float64
     upper::Float64
+    _data::Vector{Float64}       # transformed data on (0, 1)
+    _log_data::Vector{Float64}   # log.(data)
+    _log_1mdata::Vector{Float64} # log.(1 .- data)
+    _norm_const::Float64         # normalization constant (1.0 if not normalized)
 end
 
 # --------------------------------------------------------------------------
@@ -208,11 +214,13 @@ function betakde(data::AbstractVector{<:Real}; bw::Union{Symbol,Real}=:HS, npoin
     end
 
     # Post-hoc normalization via trapezoidal rule
+    norm_const = 1.0
     if normalize
         dx = step(x_grid)
         integral = dx * ((density[1] + density[end]) / 2 + sum(@view density[2:end-1]))
         if integral > 0.0
             density ./= integral
+            norm_const = integral
         end
     end
 
@@ -220,29 +228,49 @@ function betakde(data::AbstractVector{<:Real}; bw::Union{Symbol,Real}=:HS, npoin
     x_out = collect(x_grid) .* span .+ lo
     density ./= span
 
-    return BetaKDEUnivariate(x_out, density, h, lo, hi)
+    return BetaKDEUnivariate(x_out, density, h, lo, hi, data_c, log_data, log_1mdata, norm_const)
 end
 
 # --------------------------------------------------------------------------
-# Point Evaluation (pdf / logpdf via linear interpolation)
+# Point Evaluation (exact kernel evaluation)
 # --------------------------------------------------------------------------
 
 """
-    _interp_density(k::BetaKDEUnivariate, x::Real) -> Float64
+    _exact_eval(k::BetaKDEUnivariate, x::Real) -> Float64
 
-Linear interpolation of the stored gridded density at point `x`.
+Exact kernel density evaluation at point `x` by computing the full O(n) kernel sum.
 Returns 0.0 for `x` outside `[k.lower, k.upper]`.
 """
-function _interp_density(k::BetaKDEUnivariate, x::Real)
+function _exact_eval(k::BetaKDEUnivariate, x::Real)
     xf = Float64(x)
     (xf < k.lower || xf > k.upper) && return 0.0
-    n = length(k.x)
-    # Fractional index
-    t = (xf - k.lower) / (k.upper - k.lower) * (n - 1)
-    i = floor(Int, t)
-    i = clamp(i, 0, n - 2)
-    w = t - i
-    return (1.0 - w) * k.density[i+1] + w * k.density[i+2]
+    span = k.upper - k.lower
+    t = (xf - k.lower) / span  # transform to [0, 1]
+    h = k.bandwidth
+
+    # Boundary correction
+    α = t / h
+    β_p = (1.0 - t) / h
+    if t < 2h
+        α = _rho(t, h)
+    end
+    if t > 1.0 - 2h
+        β_p = _rho(1.0 - t, h)
+    end
+    α = max(α, 1e-10)
+    β_p = max(β_p, 1e-10)
+
+    # Kernel sum
+    lb = logbeta(α, β_p)
+    am1 = α - 1.0
+    bm1 = β_p - 1.0
+    n = length(k._data)
+    s = 0.0
+    @inbounds @simd for j in eachindex(k._data)
+        s += exp(am1 * k._log_data[j] + bm1 * k._log_1mdata[j] - lb)
+    end
+
+    return (s / n) / (k._norm_const * span)
 end
 
 import Distributions: pdf, logpdf
@@ -250,9 +278,9 @@ import Distributions: pdf, logpdf
 """
     pdf(k::BetaKDEUnivariate, x::Real)
 
-Evaluate the estimated density at point `x` via linear interpolation on the grid.
+Evaluate the exact kernel density at point `x` (O(n) computation).
 """
-pdf(k::BetaKDEUnivariate, x::Real) = _interp_density(k, x)
+pdf(k::BetaKDEUnivariate, x::Real) = _exact_eval(k, x)
 
 """
     logpdf(k::BetaKDEUnivariate, x::Real)
@@ -260,7 +288,7 @@ pdf(k::BetaKDEUnivariate, x::Real) = _interp_density(k, x)
 Log-density at point `x`. Returns `-Inf` for `x` outside the support.
 """
 function logpdf(k::BetaKDEUnivariate, x::Real)
-    d = _interp_density(k, x)
+    d = _exact_eval(k, x)
     return d > 0.0 ? log(d) : -Inf
 end
 
@@ -269,7 +297,7 @@ end
 
 Callable shorthand: `result(0.3)` is equivalent to `pdf(result, 0.3)`.
 """
-(k::BetaKDEUnivariate)(x::Real) = _interp_density(k, x)
+(k::BetaKDEUnivariate)(x::Real) = _exact_eval(k, x)
 
 # --------------------------------------------------------------------------
 # Summary Statistics (computed from gridded density)
