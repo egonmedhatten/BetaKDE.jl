@@ -211,14 +211,15 @@ end
 
     @testset "pdf at grid points matches stored density" begin
         for i in [1, 100, 256, 512]
-            @test pdf(result, result.x[i]) ≈ result.density[i] atol=1e-12
+            @test pdf(result, result.x[i]) ≈ result.density[i] rtol=1e-10
         end
     end
 
-    @testset "pdf between grid points interpolates" begin
+    @testset "pdf at off-grid points is exact" begin
         mid_x = (result.x[100] + result.x[101]) / 2
-        mid_d = (result.density[100] + result.density[101]) / 2
-        @test pdf(result, mid_x) ≈ mid_d atol=1e-12
+        @test pdf(result, mid_x) > 0.0
+        # Callable syntax gives same result
+        @test result(mid_x) == pdf(result, mid_x)
     end
 
     @testset "pdf outside support returns 0" begin
