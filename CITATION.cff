@@ -5,8 +5,8 @@ authors:
   - family-names: "Hallberg Szabadváry"
     given-names: "Johan"
 type: software
-url: "https://github.com/JuliaStats/KernelDensity.jl"
-repository-code: "https://github.com/JuliaStats/KernelDensity.jl"
+url: "https://github.com/egonmedhatten/BetaKDE.jl"
+repository-code: "https://github.com/egonmedhatten/BetaKDE.jl"
 license: BSD-3-Clause
 preferred-citation:
   type: article
