@@ -137,4 +137,161 @@ using Distributions
         @test 0.1 < result.x[peak_idx] < 0.35
     end
 
+    @testset "Arbitrary bounds [a, b]" begin
+        # Generate data on [2, 7] from a scaled Beta
+        raw = rand(Beta(2, 5), 500)
+        data = raw .* 5.0 .+ 2.0  # [2, 7]
+        result = betakde(data; lower=2.0, upper=7.0)
+
+        @test result.lower == 2.0
+        @test result.upper == 7.0
+        @test result.x[1] ≈ 2.0
+        @test result.x[end] ≈ 7.0
+
+        # Density integrates to 1
+        dx = diff(result.x)
+        integral = sum(dx .* (result.density[1:end-1] .+ result.density[2:end]) ./ 2)
+        @test isapprox(integral, 1.0; atol=1e-10)
+
+        # All density values non-negative
+        @test all(result.density .>= 0.0)
+    end
+
+    @testset "Bounds default matches original" begin
+        data = rand(Beta(3, 3), 300)
+        r1 = betakde(data)
+        r2 = betakde(data; lower=0.0, upper=1.0)
+        @test r1.x ≈ r2.x
+        @test r1.density ≈ r2.density
+        @test r1.bandwidth == r2.bandwidth
+    end
+
+    @testset "Invalid bounds error" begin
+        @test_throws ArgumentError betakde([0.5]; lower=1.0, upper=0.0)
+        @test_throws ArgumentError betakde([0.5]; lower=1.0, upper=1.0)
+    end
+
+    @testset "Bounds with clamping" begin
+        # Data outside [0, 10] should be clamped
+        data = [-1.0, 0.5, 5.0, 9.5, 11.0]
+        result = betakde(data; lower=0.0, upper=10.0)
+        @test all(isfinite.(result.density))
+        @test result.x[1] ≈ 0.0
+        @test result.x[end] ≈ 10.0
+    end
+
+end
+
+@testset "StatsBase extension" begin
+    using StatsBase
+
+    data = rand(Beta(2, 5), 500)
+    result = fit(BetaKDEUnivariate, data)
+
+    @test result isa BetaKDEUnivariate
+    @test length(result.x) == 512
+    @test result.bandwidth > 0.0
+
+    # Keyword arguments pass through
+    result2 = fit(BetaKDEUnivariate, data; bw=0.1, npoints=256)
+    @test result2.bandwidth == 0.1
+    @test length(result2.x) == 256
+
+    # Bounds pass through
+    data_scaled = data .* 5.0
+    result3 = fit(BetaKDEUnivariate, data_scaled; lower=0.0, upper=5.0)
+    @test result3.x[end] ≈ 5.0
+end
+
+@testset "Point evaluation (pdf / logpdf)" begin
+    using Distributions: pdf, logpdf
+
+    data = rand(Beta(2, 5), 1000)
+    result = betakde(data)
+
+    @testset "pdf at grid points matches stored density" begin
+        for i in [1, 100, 256, 512]
+            @test pdf(result, result.x[i]) ≈ result.density[i] atol=1e-12
+        end
+    end
+
+    @testset "pdf between grid points interpolates" begin
+        mid_x = (result.x[100] + result.x[101]) / 2
+        mid_d = (result.density[100] + result.density[101]) / 2
+        @test pdf(result, mid_x) ≈ mid_d atol=1e-12
+    end
+
+    @testset "pdf outside support returns 0" begin
+        @test pdf(result, -0.1) == 0.0
+        @test pdf(result, 1.1) == 0.0
+    end
+
+    @testset "logpdf consistent with pdf" begin
+        x_test = 0.3
+        @test logpdf(result, x_test) ≈ log(pdf(result, x_test))
+    end
+
+    @testset "logpdf outside support returns -Inf" begin
+        @test logpdf(result, -0.1) == -Inf
+    end
+
+    @testset "pdf on arbitrary bounds" begin
+        data_ab = rand(Beta(2, 5), 500) .* 10.0
+        result_ab = betakde(data_ab; lower=0.0, upper=10.0)
+        @test pdf(result_ab, 5.0) > 0.0
+        @test pdf(result_ab, -1.0) == 0.0
+        @test pdf(result_ab, 11.0) == 0.0
+    end
+end
+
+@testset "Summary statistics (mean, var, quantile)" begin
+    using Statistics: mean, var, quantile
+
+    # Beta(2,5): theoretical mean = 2/7 ≈ 0.2857, var = 10/343 ≈ 0.0292
+    data = rand(Beta(2, 5), 10000)
+    result = betakde(data)
+
+    @testset "mean close to theoretical" begin
+        @test isapprox(mean(result), 2 / 7; atol=0.02)
+    end
+
+    @testset "var close to theoretical" begin
+        @test isapprox(var(result), 10 / 343; atol=0.005)
+    end
+
+    @testset "median (quantile 0.5) reasonable" begin
+        q50 = quantile(result, 0.5)
+        @test 0.1 < q50 < 0.5  # Beta(2,5) median ≈ 0.257
+    end
+
+    @testset "quantile monotone" begin
+        q25 = quantile(result, 0.25)
+        q50 = quantile(result, 0.50)
+        q75 = quantile(result, 0.75)
+        @test q25 < q50 < q75
+    end
+
+    @testset "quantile boundary values" begin
+        @test quantile(result, 0.0) ≈ result.x[1]
+        @test quantile(result, 1.0) ≈ result.x[end] atol=1e-4
+    end
+
+    @testset "quantile invalid p" begin
+        @test_throws ArgumentError quantile(result, -0.1)
+        @test_throws ArgumentError quantile(result, 1.1)
+    end
+end
+
+@testset "DensityInterface extension" begin
+    using DensityInterface
+
+    data = rand(Beta(2, 5), 500)
+    result = betakde(data)
+
+    @test DensityKind(result) === DensityInterface.IsDensity()
+    @test densityof(result, 0.3) == pdf(result, 0.3)
+    @test logdensityof(result, 0.3) == logpdf(result, 0.3)
+    @test logdensityof(result, 0.3) ≈ log(densityof(result, 0.3))
+    @test densityof(result, -0.1) == 0.0
+    @test logdensityof(result, -0.1) == -Inf
 end
