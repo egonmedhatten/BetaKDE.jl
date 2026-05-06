@@ -15,11 +15,15 @@ Fields mirror `KernelDensity.jl`'s `UnivariateKDE`:
 - `x`: evaluation grid points
 - `density`: estimated density values
 - `bandwidth`: bandwidth used
+- `lower`: lower bound of the support
+- `upper`: upper bound of the support
 """
 struct BetaKDEUnivariate
     x::Vector{Float64}
     density::Vector{Float64}
     bandwidth::Float64
+    lower::Float64
+    upper::Float64
 end
 
 # --------------------------------------------------------------------------
@@ -130,23 +134,31 @@ const bw_beta_rot = bw_HS
 # --------------------------------------------------------------------------
 
 """
-    betakde(data; bw=:HS, npoints=512, normalize=true) -> BetaKDEUnivariate
+    betakde(data; bw=:HS, npoints=512, normalize=true, lower=0.0, upper=1.0) -> BetaKDEUnivariate
 
-Compute a Beta kernel density estimate of `data` on [0, 1].
+Compute a Beta kernel density estimate of `data` on [`lower`, `upper`].
 
 # Arguments
-- `data`: vector of observations (values outside (0,1) are clamped).
+- `data`: vector of observations (values outside (lower, upper) are clamped).
 - `bw`: bandwidth. Either a numeric value, or `:HS` (default) for automatic
   selection via the Hallberg Szabadváry (2026) rule-of-thumb.
 - `npoints`: number of equally-spaced evaluation grid points (default 512).
 - `normalize`: if `true` (default), rescale the density so it integrates to 1.
+- `lower`: lower bound of the support (default 0.0).
+- `upper`: upper bound of the support (default 1.0).
 
 # Returns
-A `BetaKDEUnivariate` with fields `x`, `density`, and `bandwidth`.
+A `BetaKDEUnivariate` with fields `x`, `density`, `bandwidth`, `lower`, `upper`.
 """
-function betakde(data::AbstractVector{<:Real}; bw::Union{Symbol,Real}=:HS, npoints::Int=512, normalize::Bool=true)
+function betakde(data::AbstractVector{<:Real}; bw::Union{Symbol,Real}=:HS, npoints::Int=512, normalize::Bool=true, lower::Real=0.0, upper::Real=1.0)
+    lower < upper || throw(ArgumentError("lower must be less than upper"))
+    lo = Float64(lower)
+    hi = Float64(upper)
+    span = hi - lo
+
     ε = 1e-10
-    data_c = clamp.(Float64.(data), ε, 1.0 - ε)
+    # Transform data to [0, 1]
+    data_c = clamp.((Float64.(data) .- lo) ./ span, ε, 1.0 - ε)
 
     # Bandwidth selection
     h::Float64 = if bw === :HS
@@ -204,7 +216,104 @@ function betakde(data::AbstractVector{<:Real}; bw::Union{Symbol,Real}=:HS, npoin
         end
     end
 
-    return BetaKDEUnivariate(collect(x_grid), density, h)
+    # Transform grid and density back to [lower, upper]
+    x_out = collect(x_grid) .* span .+ lo
+    density ./= span
+
+    return BetaKDEUnivariate(x_out, density, h, lo, hi)
+end
+
+# --------------------------------------------------------------------------
+# Point Evaluation (pdf / logpdf via linear interpolation)
+# --------------------------------------------------------------------------
+
+"""
+    _interp_density(k::BetaKDEUnivariate, x::Real) -> Float64
+
+Linear interpolation of the stored gridded density at point `x`.
+Returns 0.0 for `x` outside `[k.lower, k.upper]`.
+"""
+function _interp_density(k::BetaKDEUnivariate, x::Real)
+    xf = Float64(x)
+    (xf < k.lower || xf > k.upper) && return 0.0
+    n = length(k.x)
+    # Fractional index
+    t = (xf - k.lower) / (k.upper - k.lower) * (n - 1)
+    i = floor(Int, t)
+    i = clamp(i, 0, n - 2)
+    w = t - i
+    return (1.0 - w) * k.density[i+1] + w * k.density[i+2]
+end
+
+import Distributions: pdf, logpdf
+
+"""
+    pdf(k::BetaKDEUnivariate, x::Real)
+
+Evaluate the estimated density at point `x` via linear interpolation on the grid.
+"""
+pdf(k::BetaKDEUnivariate, x::Real) = _interp_density(k, x)
+
+"""
+    logpdf(k::BetaKDEUnivariate, x::Real)
+
+Log-density at point `x`. Returns `-Inf` for `x` outside the support.
+"""
+function logpdf(k::BetaKDEUnivariate, x::Real)
+    d = _interp_density(k, x)
+    return d > 0.0 ? log(d) : -Inf
+end
+
+# --------------------------------------------------------------------------
+# Summary Statistics (computed from gridded density)
+# --------------------------------------------------------------------------
+
+import Statistics: mean, var, quantile
+
+"""
+    mean(k::BetaKDEUnivariate)
+
+Mean of the estimated density, computed via trapezoidal integration.
+"""
+function mean(k::BetaKDEUnivariate)
+    dx = k.x[2] - k.x[1]
+    xf = k.x .* k.density
+    return dx * ((xf[1] + xf[end]) / 2 + sum(@view xf[2:end-1]))
+end
+
+"""
+    var(k::BetaKDEUnivariate)
+
+Variance of the estimated density, computed via trapezoidal integration.
+"""
+function var(k::BetaKDEUnivariate)
+    μ = mean(k)
+    dx = k.x[2] - k.x[1]
+    x2f = ((k.x .- μ) .^ 2) .* k.density
+    return dx * ((x2f[1] + x2f[end]) / 2 + sum(@view x2f[2:end-1]))
+end
+
+"""
+    quantile(k::BetaKDEUnivariate, p::Real)
+
+`p`-th quantile of the estimated density via cumulative trapezoidal integration.
+"""
+function quantile(k::BetaKDEUnivariate, p::Real)
+    (0.0 <= p <= 1.0) || throw(ArgumentError("p must be in [0, 1]"))
+    n = length(k.x)
+    dx = k.x[2] - k.x[1]
+    # Build cumulative distribution
+    cum = 0.0
+    @inbounds for i in 2:n
+        cum += dx * (k.density[i-1] + k.density[i]) / 2
+        if cum >= p
+            # Linear interpolation between x[i-1] and x[i]
+            prev_cum = cum - dx * (k.density[i-1] + k.density[i]) / 2
+            frac = (p - prev_cum) / (cum - prev_cum)
+            return k.x[i-1] + frac * dx
+        end
+    end
+    return k.x[end]
 end
 
 # --------------------------------------------------------------------------
