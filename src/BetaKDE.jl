@@ -264,6 +264,13 @@ function logpdf(k::BetaKDEUnivariate, x::Real)
     return d > 0.0 ? log(d) : -Inf
 end
 
+"""
+    (k::BetaKDEUnivariate)(x::Real)
+
+Callable shorthand: `result(0.3)` is equivalent to `pdf(result, 0.3)`.
+"""
+(k::BetaKDEUnivariate)(x::Real) = _interp_density(k, x)
+
 # --------------------------------------------------------------------------
 # Summary Statistics (computed from gridded density)
 # --------------------------------------------------------------------------
@@ -300,6 +307,8 @@ end
 """
 function quantile(k::BetaKDEUnivariate, p::Real)
     (0.0 <= p <= 1.0) || throw(ArgumentError("p must be in [0, 1]"))
+    p == 0.0 && return k.x[1]
+    p == 1.0 && return k.x[end]
     n = length(k.x)
     dx = k.x[2] - k.x[1]
     # Build cumulative distribution

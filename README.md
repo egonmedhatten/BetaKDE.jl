@@ -120,13 +120,14 @@ Result struct with fields:
 
 ### Point Evaluation
 
-The result supports `pdf` and `logpdf` from `Distributions.jl` via linear interpolation on the stored grid:
+The result supports `pdf` and `logpdf` from `Distributions.jl`, computing the exact kernel density at any point. The result is also directly callable:
 
 ```julia
 using Distributions: pdf, logpdf
 
 result = betakde(data)
-pdf(result, 0.3)     # density at x = 0.3
+result(0.3)          # density at x = 0.3 (callable syntax)
+pdf(result, 0.3)     # same thing (Distributions.jl convention)
 logpdf(result, 0.3)  # log-density at x = 0.3
 ```
 
