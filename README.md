@@ -155,6 +155,12 @@ densityof(result, 0.3)     # density at x = 0.3
 DensityKind(result)        # IsDensity()
 ```
 
+## Other Implementations
+
+The Hallberg-Szabadváry bandwidth selector is also natively available in:
+* **R:** Implemented as the default selector for beta kernels in the CRAN package [`kdensity`](https://cran.r-project.org/web/packages/kdensity/index.html) (v1.2.0+). Use it by setting `bw = "HS"`.
+* **Python:** Available in the PyPI package [`beta-kde`](https://pypi.org/project/beta-kde/).
+
 ## References
 
 - Chen, S. X. (1999). *Beta kernel estimators for density functions*. Computational Statistics & Data Analysis, 31(2), 131–145.
