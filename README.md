@@ -17,12 +17,7 @@ This package adds an **O(1) closed-form bandwidth selector** based on the MISE-o
 
 ## Installation
 
-```julia
-using Pkg
-Pkg.add(url="https://github.com/egonmedhatten/BetaKDE.jl")
-```
-
-Once registered in the General registry:
+The package is registered in the Julia General Registry. Install it via the REPL:
 
 ```julia
 ] add BetaKDE
